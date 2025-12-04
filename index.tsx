@@ -12,28 +12,36 @@ const POSITION_OFFSET = CUBIE_SIZE + CUBIE_GAP;
 function init() {
     // Scene
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a1a1a);
+    scene.background = new THREE.Color(0x222222); // Slightly lighter background
 
     // Camera
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(4, 4, 4);
+    camera.position.set(5, 5, 7); // Adjusted position for better view
 
     // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    document.getElementById('app-container').prepend(renderer.domElement);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    const container = document.getElementById('app-container');
+    if (container) {
+        container.prepend(renderer.domElement);
+    }
 
     // Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambientLight);
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.7);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
     directionalLight.position.set(5, 10, 7.5);
     scene.add(directionalLight);
+    const backLight = new THREE.DirectionalLight(0xffffff, 0.3);
+    backLight.position.set(-5, -5, -5);
+    scene.add(backLight);
 
     // Controls
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
+    controls.target.set(0, 0, 0);
 
     createCube();
     setupUI();
@@ -55,7 +63,7 @@ function createCube() {
         bottom: new THREE.MeshStandardMaterial({ color: 0xffff00 }), // Yellow
         front: new THREE.MeshStandardMaterial({ color: 0x0000ff }), // Blue
         back: new THREE.MeshStandardMaterial({ color: 0x00ff00 }), // Green
-        inner: new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 })
+        inner: new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 }) // Match bg slightly or dark
     };
 
     const geometry = new THREE.BoxGeometry(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE);
@@ -63,6 +71,9 @@ function createCube() {
     for (let x = -HALF_CUBE; x <= HALF_CUBE; x++) {
         for (let y = -HALF_CUBE; y <= HALF_CUBE; y++) {
             for (let z = -HALF_CUBE; z <= HALF_CUBE; z++) {
+                // Keep the core if needed for structure, or skip. Skipping center is fine.
+                // However, for animation pivots, having a full grid is sometimes safer, but here we attach/detach.
+                // Skipping (0,0,0) for odd dimensions.
                 if (x === 0 && y === 0 && z === 0 && CUBE_DIMENSION % 2 !== 0) continue;
 
                 const materials = [
@@ -76,6 +87,10 @@ function createCube() {
 
                 const cubie = new THREE.Mesh(geometry, materials);
                 cubie.position.set(x * POSITION_OFFSET, y * POSITION_OFFSET, z * POSITION_OFFSET);
+                
+                // Add userData to identify initial grid position if needed
+                cubie.userData = { x, y, z };
+                
                 cubeGroup.add(cubie);
             }
         }
@@ -87,24 +102,28 @@ function setupUI() {
     const shuffleButton = document.getElementById('shuffle-btn') as HTMLButtonElement;
     const resetButton = document.getElementById('reset-btn') as HTMLButtonElement;
 
-    shuffleButton.onclick = async () => {
-        shuffleButton.disabled = true;
-        resetButton.disabled = true;
-        await shuffleCube();
-        shuffleButton.disabled = false;
-        resetButton.disabled = false;
-    };
+    if (shuffleButton) {
+        shuffleButton.onclick = async () => {
+            shuffleButton.disabled = true;
+            if (resetButton) resetButton.disabled = true;
+            await shuffleCube();
+            shuffleButton.disabled = false;
+            if (resetButton) resetButton.disabled = false;
+        };
+    }
 
-    resetButton.onclick = () => {
-        if (shuffleButton.disabled) return;
-        resetCube();
-    };
+    if (resetButton) {
+        resetButton.onclick = () => {
+            if (shuffleButton && shuffleButton.disabled) return;
+            resetCube();
+        };
+    }
 }
 
 async function shuffleCube() {
     const moves = ['U', 'D', 'L', 'R', 'F', 'B'];
     const modifiers = ['', "'", '2'];
-    const numMoves = 25;
+    const numMoves = 20;
 
     for (let i = 0; i < numMoves; i++) {
         const move = moves[Math.floor(Math.random() * moves.length)];
@@ -124,6 +143,8 @@ function performMove(move: string) {
         let angleDirection = 1;
 
         const layerPosition = HALF_CUBE * POSITION_OFFSET;
+        // Epsilon for float comparison
+        const epsilon = 0.1;
 
         switch(face) {
             case 'U': axis.set(0, 1, 0); cubiesToRotate = getCubiesByPosition('y', layerPosition); angleDirection = -1; break;
@@ -134,47 +155,64 @@ function performMove(move: string) {
             case 'B': axis.set(0, 0, 1); cubiesToRotate = getCubiesByPosition('z', -layerPosition); angleDirection = 1; break;
         }
 
+        if (cubiesToRotate.length === 0) {
+            resolve();
+            return;
+        }
+
         let totalAngle = (Math.PI / 2) * angleDirection;
         if (isPrime) totalAngle *= -1;
         if (isDouble) totalAngle *= 2;
         
-        const animationDuration = 200; // ms
+        const animationDuration = 300; // ms
         const startTime = performance.now();
         const pivot = new THREE.Object3D();
+        pivot.rotation.set(0, 0, 0);
+        pivot.updateMatrixWorld();
         scene.add(pivot);
-        cubiesToRotate.forEach(cubie => pivot.attach(cubie));
+        
+        // Attach cubies to pivot
+        cubiesToRotate.forEach(cubie => {
+            pivot.attach(cubie);
+        });
 
         let lastAngle = 0;
 
         function animateRotation() {
             const elapsedTime = performance.now() - startTime;
-            const progress = Math.min(elapsedTime / animationDuration, 1);
-            const currentAngle = totalAngle * progress;
-
-            pivot.rotateOnWorldAxis(axis, currentAngle - lastAngle);
+            let progress = elapsedTime / animationDuration;
+            if (progress > 1) progress = 1;
+            
+            // Ease out quad
+            const ease = 1 - (1 - progress) * (1 - progress);
+            
+            const currentAngle = totalAngle * ease;
+            const delta = currentAngle - lastAngle;
+            
+            pivot.rotateOnWorldAxis(axis, delta);
             lastAngle = currentAngle;
 
             if (progress < 1) {
                 requestAnimationFrame(animateRotation);
             } else {
-                // Animation finished
                 pivot.updateMatrixWorld(true);
 
                 cubiesToRotate.forEach(cubie => {
-                    cubeGroup.attach(cubie); // This preserves world transform
-                    // Snap position to grid
-                    cubie.position.set(
-                        Math.round(cubie.position.x / POSITION_OFFSET) * POSITION_OFFSET,
-                        Math.round(cubie.position.y / POSITION_OFFSET) * POSITION_OFFSET,
-                        Math.round(cubie.position.z / POSITION_OFFSET) * POSITION_OFFSET
-                    );
-                    // Snap rotation to nearest 90 degrees
-                    const euler = new THREE.Euler().setFromQuaternion(cubie.quaternion, 'XYZ');
-                    cubie.quaternion.setFromEuler(new THREE.Euler(
+                    cubeGroup.attach(cubie);
+                    
+                    // Snap positions
+                    cubie.position.x = Math.round(cubie.position.x / POSITION_OFFSET) * POSITION_OFFSET;
+                    cubie.position.y = Math.round(cubie.position.y / POSITION_OFFSET) * POSITION_OFFSET;
+                    cubie.position.z = Math.round(cubie.position.z / POSITION_OFFSET) * POSITION_OFFSET;
+                    
+                    // Snap rotation
+                    const euler = new THREE.Euler().setFromQuaternion(cubie.quaternion);
+                    cubie.rotation.set(
                         Math.round(euler.x / (Math.PI / 2)) * (Math.PI / 2),
                         Math.round(euler.y / (Math.PI / 2)) * (Math.PI / 2),
                         Math.round(euler.z / (Math.PI / 2)) * (Math.PI / 2)
-                    ));
+                    );
+                    cubie.updateMatrixWorld();
                 });
 
                 scene.remove(pivot);
@@ -188,7 +226,7 @@ function performMove(move: string) {
 
 function getCubiesByPosition(axis: 'x' | 'y' | 'z', value: number): THREE.Mesh[] {
     return cubeGroup.children.filter(
-        (c) => Math.abs(c.position[axis] - value) < 0.01
+        (c) => Math.abs(c.position[axis] - value) < 0.5 // Increased tolerance
     ) as THREE.Mesh[];
 }
 
@@ -197,6 +235,7 @@ function resetCube() {
 }
 
 function onWindowResize() {
+    if (!camera || !renderer) return;
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -204,8 +243,8 @@ function onWindowResize() {
 
 function animate() {
     requestAnimationFrame(animate);
-    controls.update();
-    renderer.render(scene, camera);
+    if (controls) controls.update();
+    if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
 init();
